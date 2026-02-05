@@ -1,0 +1,1540 @@
+# CrowPanel ESP32-P4 5.0" 800x480 Display Configuration
+# Hardware: ESP32-P4 with RGB Parallel Touch Display
+# Based on Elecrow factory source code V1.0
+#
+# Coffee Station Controller with LVGL touchscreen UI
+# Features: Brew method selector, grinder control, scale integration,
+#           brew timer, water target calculator, backlight control
+
+substitutions:
+  device_name: crowpanel5
+  friendly_name: "CrowPanel 5"
+
+esphome:
+  name: ${device_name}
+  friendly_name: ${friendly_name}
+
+  # Turn on backlight on boot
+  on_boot:
+    priority: -100  # Run after everything else is initialized
+    then:
+      - delay: 2s
+      # Enable backlight power (GPIO command to STC8 MCU)
+      - lambda: |-
+          uint8_t cmd[2] = {0x1B, 0x01};  // Register 0x1B (GPIO3=LCD_BL_POWER), value=1 (enable)
+          id(bus_a)->write(0x2F, cmd, 2);
+          ESP_LOGI("backlight", "Backlight power enabled");
+      - delay: 100ms
+      # Set backlight brightness to 100% (PWM command to STC8 MCU)
+      - lambda: |-
+          uint8_t cmd[2] = {0x20, 100};  // Register 0x20 (PWM0), duty = 100%
+          id(bus_a)->write(0x2F, cmd, 2);
+          ESP_LOGI("backlight", "Backlight brightness set to 100%%");
+      - delay: 100ms
+      # Enable audio amplifier (GPIO command to STC8 MCU)
+      # Register 0x1A = GPIO2 (AUDIO_SD), value=0 (active low = enabled)
+      - lambda: |-
+          uint8_t cmd[2] = {0x1A, 0x00};  // Register 0x1A (GPIO2=AUDIO_SD), value=0 (enable amp)
+          id(bus_a)->write(0x2F, cmd, 2);
+          ESP_LOGI("audio", "Audio amplifier enabled");
+      # Initialize coffee station display labels
+      - script.execute: init_display
+
+# Script to initialize coffee station display values on boot
+script:
+  - id: init_display
+    mode: single
+    then:
+      - delay: 2s  # Wait for LVGL to be ready
+      - lambda: |-
+          // Initialize bean weight button label
+          char buf[20];
+          snprintf(buf, sizeof(buf), "%.0fg", id(beanweight));
+          lv_label_set_text(id(bean_weight_label), buf);
+
+          // Initialize grounds_card labels
+          char target_buf[30];
+          snprintf(target_buf, sizeof(target_buf), "Target: %.0fg", id(beanweight));
+          lv_label_set_text(id(target_weight_label), target_buf);
+
+          // Initialize final weight labels
+          if (id(final_grind_weight) > 0.0) {
+            char final_buf[30];
+            snprintf(final_buf, sizeof(final_buf), "Final: %.1fg", id(final_grind_weight));
+            lv_label_set_text(id(final_weight_label), final_buf);
+            lv_label_set_text(id(info_final_label), final_buf);
+          } else {
+            lv_label_set_text(id(final_weight_label), "Final: --");
+            lv_label_set_text(id(info_final_label), "Final: --");
+          }
+
+          // Initialize info card values
+          lv_label_set_text(id(info_grinder_value), "0g");
+          lv_label_set_text(id(info_brewer_value), "0g");
+
+          char water_buf[20];
+          snprintf(water_buf, sizeof(water_buf), "%.0fg", id(water_target));
+          lv_label_set_text(id(info_water_value), water_buf);
+          lv_label_set_text(id(water_value), water_buf);
+
+          ESP_LOGI("init", "Display initialized: beans=%.1fg, water_target=%.0fg, final=%.1fg",
+                   id(beanweight), id(water_target), id(final_grind_weight));
+
+# Load custom ESP32-P4 RGB display component
+external_components:
+  - source:
+      type: local
+      path: components
+    components: [esp32_p4_rgb_display]
+debug:
+  update_interval: 5s
+# ESP32-P4 Configuration
+esp32:
+  variant: esp32p4
+  flash_size: 16MB
+  framework:
+    type: esp-idf
+    version: recommended
+    sdkconfig_options:
+      # Enable experimental features for ESP32-P4
+      CONFIG_IDF_EXPERIMENTAL_FEATURES: "y"
+
+      # Flash configuration
+      CONFIG_ESPTOOLPY_FLASHMODE_QIO: "y"
+      CONFIG_ESPTOOLPY_FLASHFREQ_80M: "y"
+      CONFIG_ESPTOOLPY_FLASHSIZE_16MB: "y"
+
+      # ESP-Hosted for WiFi via ESP32-C6
+      CONFIG_ESP_HOSTED_ENABLED: "y"
+      CONFIG_ESP_HOSTED_PRIV_SDIO_OPTION: "y"
+      CONFIG_ESP_HOSTED_IDF_SLAVE_TARGET: "esp32c6"
+      CONFIG_ESP_HOSTED_SDIO_RESET_ACTIVE_HIGH: "y"
+      CONFIG_ESP_HOSTED_SDIO_SLOT_1: "y"
+      CONFIG_ESP_HOSTED_SDIO_4_BIT_BUS: "y"
+      CONFIG_ESP_HOSTED_SDIO_CLOCK_FREQ_KHZ: "40000"
+      CONFIG_ESP_HOSTED_PRIV_SDIO_PIN_CMD_SLOT_1: "54"
+      CONFIG_ESP_HOSTED_PRIV_SDIO_PIN_CLK_SLOT_1: "53"
+      CONFIG_ESP_HOSTED_PRIV_SDIO_PIN_D0_SLOT_1: "52"
+      CONFIG_ESP_HOSTED_PRIV_SDIO_PIN_D1_4BIT_BUS_SLOT_1: "51"
+      CONFIG_ESP_HOSTED_PRIV_SDIO_PIN_D2_4BIT_BUS_SLOT_1: "50"
+      CONFIG_ESP_HOSTED_PRIV_SDIO_PIN_D3_4BIT_BUS_SLOT_1: "49"
+      CONFIG_ESP_HOSTED_SDIO_GPIO_RESET_SLAVE: "20"
+      CONFIG_ESP_HOSTED_ENABLE_BT_BLUEDROID: "y"
+
+# PSRAM Configuration (32MB HEX mode)
+psram:
+  mode: hex
+  speed: 200MHz
+
+# Logging
+logger:
+  level: INFO
+
+# Home Assistant API
+api:
+  encryption:
+    key: !secret api_pw
+
+# OTA Updates
+ota:
+  - platform: esphome
+    password: !secret ota_pw
+
+# ESP-Hosted component for WiFi via ESP32-C6
+esp32_hosted:
+  variant: ESP32C6
+  reset_pin: GPIO20
+  cmd_pin: GPIO54
+  clk_pin: GPIO53
+  d0_pin: GPIO52
+  d1_pin: GPIO51
+  d2_pin: GPIO50
+  d3_pin: GPIO49
+  active_high: true
+
+# WiFi configuration (via ESP32-C6 ESP-Hosted)
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+
+  # Optional: Uncomment and set a static IP for your network
+  # manual_ip:
+  #   static_ip: 192.168.1.100
+  #   gateway: 192.168.1.1
+  #   subnet: 255.255.255.0
+
+  # Fallback hotspot
+  ap:
+    ssid: "${device_name} Fallback"
+    password: !secret fallback_pw
+
+# Captive portal
+captive_portal:
+
+# Global variables for coffee station tracking
+globals:
+  - id: initial_zero
+    type: float
+    restore_value: yes
+    initial_value: '-106400'  # Matches the zero calibration point
+
+  - id: beanweight
+    type: float
+    restore_value: yes
+    initial_value: '20.0'  # Default to Kalita Wave (20g)
+
+  - id: brew_timer_duration
+    type: int
+    restore_value: yes
+    initial_value: '0'
+
+  - id: water_target
+    type: float
+    restore_value: yes
+    initial_value: '0.0'
+
+  - id: final_grind_weight
+    type: float
+    restore_value: yes
+    initial_value: '0.0'
+
+  # Individual sound enable/disable controls
+  - id: tare_sound_enabled
+    type: bool
+    restore_value: yes
+    initial_value: 'true'
+
+  - id: grinder_sound_enabled
+    type: bool
+    restore_value: yes
+    initial_value: 'true'
+
+  - id: timer_sound_enabled
+    type: bool
+    restore_value: yes
+    initial_value: 'true'
+
+  - id: scale_tap_sound_enabled
+    type: bool
+    restore_value: yes
+    initial_value: 'true'
+
+  - id: boot_sound_enabled
+    type: bool
+    restore_value: yes
+    initial_value: 'true'
+
+# Time component
+time:
+  - platform: homeassistant
+    id: ha_time
+    timezone: America/Los_Angeles  # Change to your timezone
+    on_time:
+      # Turn off display at 10pm
+      - hours: 22
+        minutes: 0
+        seconds: 0
+        then:
+          - number.set:
+              id: backlight_brightness
+              value: 0
+          - logger.log: "Display backlight turned off at 10pm"
+      # Update date label every minute at second 0
+      - seconds: 0
+        then:
+          - lvgl.label.update:
+              id: header_date_label
+              text: !lambda |-
+                auto time = id(ha_time).now();
+                if (!time.is_valid()) {
+                  return std::string("--");
+                }
+                const char* months[] = {"Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"};
+                const char* days[] = {"Sun","Mon","Tue","Wed","Thu","Fri","Sat"};
+                int hour = time.hour;
+                const char* ampm = hour >= 12 ? "PM" : "AM";
+                if (hour == 0) hour = 12;
+                else if (hour > 12) hour -= 12;
+                char buf[40];
+                snprintf(buf, sizeof(buf), "%s, %s %d  %d:%02d %s", days[time.day_of_week - 1], months[time.month - 1], time.day_of_month, hour, time.minute, ampm);
+                return std::string(buf);
+      # Turn on display at 4am
+      - hours: 4
+        minutes: 0
+        seconds: 0
+        then:
+          - number.set:
+              id: backlight_brightness
+              value: 100
+          - logger.log: "Display backlight turned on at 4am"
+
+# I2C Bus Configuration (SDA=45, SCL=46)
+i2c:
+  - id: bus_a
+    sda: GPIO45
+    scl: GPIO46
+    scan: true
+    frequency: 400kHz
+
+# GT911 Touchscreen Controller
+touchscreen:
+  - platform: gt911
+    id: touch_panel
+    i2c_id: bus_a
+    interrupt_pin: GPIO42
+    reset_pin: GPIO36
+    on_touch:
+      - lambda: |-
+          ESP_LOGI("touch", "Touch at x=%d, y=%d", touch.x, touch.y);
+
+# SD Card (Micro SD slot) - Not configured
+# ESPHome doesn't have native SD/MMC support for ESP-IDF
+# Pins for reference: CLK=GPIO43, CMD=GPIO44, D0=GPIO39
+
+# I2S Audio Configuration
+# Two NS4168 mono Class D amplifiers configured for stereo output
+# Speaker pins: LRCLK=GPIO21, BCLK=GPIO22, DOUT=GPIO23
+# Left speaker (U13): I2SOUT_LRCK1, I2SOUT_SCLK1, I2SOUT_SD1
+# Right speaker (U3): I2SOUT_LRCK2, I2SOUT_SCLK2, I2SOUT_SD2
+i2s_audio:
+  - id: i2s_out
+    i2s_lrclk_pin: GPIO21
+    i2s_bclk_pin: GPIO22
+
+speaker:
+  - platform: i2s_audio
+    id: speaker_out
+    i2s_audio_id: i2s_out
+    dac_type: external
+    i2s_dout_pin: GPIO23
+
+# RTTTL Buzzer for playing tones/melodies
+rtttl:
+  id: buzzer
+  speaker: speaker_out
+
+# RGB Parallel Display Configuration
+# 800x480 @ ~42Hz (25MHz pixel clock)
+# Using custom ESP32-P4 RGB LCD component
+display:
+  - platform: esp32_p4_rgb_display
+    id: main_display
+    auto_clear_enabled: false
+    update_interval: never
+
+    dimensions:
+      width: 800
+      height: 480
+
+    # Timing configuration from factory code
+    # Factory uses 25MHz with bounce buffers for anti-tearing
+    pclk_frequency: 25MHz
+    pclk_inverted: false
+
+    # Control pins
+    de_pin: GPIO2
+    hsync_pin: GPIO40
+    vsync_pin: GPIO41
+    pclk_pin: GPIO3
+
+    # Timing parameters (based on factory code)
+    # Refresh Rate = 25MHz/(1+8+8+800)/(1+16+16+480) = ~42Hz
+    hsync_pulse_width: 4
+    hsync_back_porch: 8
+    hsync_front_porch: 8
+    vsync_pulse_width: 4
+    vsync_back_porch: 16
+    vsync_front_porch: 16
+
+    # RGB Data pins (16-bit RGB565 mode)
+    # Pins ordered as DATA0-DATA15
+    data_pins:
+      - GPIO8   # DATA0  (R3)
+      - GPIO7   # DATA1  (R4)
+      - GPIO6   # DATA2  (R5)
+      - GPIO5   # DATA3  (R6)
+      - GPIO4   # DATA4  (R7)
+      - GPIO14  # DATA5  (G2)
+      - GPIO13  # DATA6  (G3)
+      - GPIO12  # DATA7  (G4)
+      - GPIO11  # DATA8  (G5)
+      - GPIO10  # DATA9  (G6)
+      - GPIO9   # DATA10 (G7)
+      - GPIO19  # DATA11 (B3)
+      - GPIO18  # DATA12 (B4)
+      - GPIO17  # DATA13 (B5)
+      - GPIO16  # DATA14 (B6)
+      - GPIO15  # DATA15 (B7)
+
+lvgl:
+  displays:
+    - main_display
+
+  touchscreens:
+    - touch_panel
+
+  color_depth: 16
+  # Factory uses full-screen buffer (800*480) for best anti-tearing
+  buffer_size: 100%
+  log_level: ERROR
+
+  style_definitions:
+    - id: style_header
+      bg_color: 0x1a1a1a
+      bg_opa: COVER
+      text_color: 0xFFFFFF
+      text_font: small
+      pad_all: 8
+      radius: 0
+
+    - id: style_card
+      bg_color: 0x2a2a2a
+      bg_opa: COVER
+      border_color: 0x3a3a3a
+      border_width: 2
+      radius: 10
+      pad_all: 10
+      shadow_width: 10
+      shadow_opa: 30%
+      shadow_color: 0x000000
+
+    - id: style_button
+      bg_color: 0x2F8CD8
+      bg_grad_color: 0x005782
+      bg_grad_dir: VER
+      bg_opa: COVER
+      border_color: 0x0077b3
+      border_width: 2
+      radius: 12
+      text_color: 0xFFFFFF
+      text_font: small
+      shadow_width: 8
+      shadow_opa: 25%
+      shadow_color: 0x000000
+
+    - id: style_button_pressed
+      bg_color: 0x006699
+      bg_grad_color: 0x00334d
+
+    - id: style_button_checked
+      bg_color: 0x00AA44
+      bg_grad_color: 0x006622
+      border_color: 0x00CC55
+
+  pages:
+    - id: main_page
+      bg_color: 0x000000
+      bg_opa: COVER
+      widgets:
+        # Header Bar - Outside Temp (left), Date (center), Weather (right)
+        - label:
+            id: header_temp_label
+            text: "--°"
+            x: 15
+            y: 12
+            align: TOP_LEFT
+            text_font: small
+            text_color: 0x00DDFF
+        - label:
+            id: header_date_label
+            text: ""
+            y: 12
+            align: TOP_MID
+            text_font: small
+            text_color: 0xFFFFFF
+        - label:
+            id: header_weather_label
+            text: "--"
+            x: -15
+            y: 12
+            align: TOP_RIGHT
+            text_font: small
+            text_color: 0xFF8800
+
+        # Weight Card (Bottom Left) - Split into two sections
+        # Grinder Display (Left) - Shows NAU7802 coffee scale
+        - obj:
+            id: grounds_card
+            height: 200
+            width: 190
+            x: 10
+            y: 260
+            styles: style_card
+            on_click:
+              - button.press: tare_scale_btn
+              - if:
+                  condition:
+                    lambda: 'return id(scale_tap_sound_enabled);'
+                  then:
+                    - rtttl.play: "beep:d=4,o=5,b=100:16e6"
+            widgets:
+              - label:
+                  text: "Grinder"
+                  align: TOP_LEFT
+                  x: 10
+                  y: 10
+                  text_font: tiny
+                  text_color: 0xAAAAAA
+              - label:
+                  id: bookoo_battery_label
+                  text: "--%"
+                  align: TOP_RIGHT
+                  x: -10
+                  y: 10
+                  text_font: tiny
+                  text_color: 0xAAAAAA
+              - label:
+                  id: target_weight_label
+                  text: !lambda |-
+                    static char buf[30];
+                    snprintf(buf, sizeof(buf), "Target: %.0fg", id(beanweight));
+                    return buf;
+                  align: CENTER
+                  y: -10
+                  text_font: small
+                  text_color: 0xFFFFFF
+              - label:
+                  id: final_weight_label
+                  text: !lambda |-
+                    if (id(final_grind_weight) > 0.0) {
+                      static char buf[30];
+                      snprintf(buf, sizeof(buf), "Final: %.1fg", id(final_grind_weight));
+                      return buf;
+                    } else {
+                      return "Final: --";
+                    }
+                  align: CENTER
+                  y: 25
+                  text_font: small
+                  text_color: 0x00FF88
+
+        # Water Display (Right)
+        - obj:
+            id: water_card
+            height: 200
+            width: 190
+            x: 210
+            y: 260
+            styles: style_card
+            widgets:
+              - label:
+                  text: "Water"
+                  align: TOP_MID
+                  y: 10
+                  text_font: tiny
+                  text_color: 0xAAAAAA
+              - label:
+                  id: water_value
+                  text: "0g"
+                  align: CENTER
+                  y: -20
+                  text_font: medium_small
+                  text_color: 0xFF8800
+              - label:
+                  id: water_temp_label
+                  text: "--°F"
+                  align: BOTTOM_MID
+                  y: -10
+                  text_font: tiny
+                  text_color: 0xAAAAAA
+
+        # Brew Method Selector Card (Top Left)
+        - obj:
+            id: method_card
+            height: 200
+            width: 390
+            x: 10
+            y: 50
+            styles: style_card
+            widgets:
+              - label:
+                  text: "Brew Method"
+                  align: TOP_LEFT
+                  x: 10
+                  y: 10
+                  text_font: tiny
+                  text_color: 0xAAAAAA
+              - roller:
+                  id: roller
+                  width: 360
+                  height: 160
+                  align: BOTTOM_MID
+                  y: -5
+                  text_font: small
+                  text_color: 0xFFFFFF
+                  bg_color: 0x2a2a2a
+                  bg_opa: COVER
+                  border_width: 0
+                  options:
+                    - Chemex
+                    - Kalita Wave
+                    - AeroPress
+                    - Clever Dripper
+                    - French Press
+                    - Moka Pot
+                    - Cold Brew
+                  selected_index: 1
+                  visible_row_count: 5
+                  on_value:
+                    - lambda: |-
+                        int duration = 0; // default no timer
+                        float target_weight = 0.0; // target grind weight in grams
+
+                        // x is the selected index: 0=Chemex, 1=Kalita, 2=AeroPress, 3=Clever, 4=French, 5=Moka, 6=Cold Brew
+                        switch (x) {
+                          case 0:  // Chemex
+                            target_weight = 20.0;
+                            duration = 0;
+                            break;
+                          case 1:  // Kalita Wave
+                            target_weight = 20.0;
+                            duration = 0;
+                            break;
+                          case 2:  // AeroPress
+                            target_weight = 16.0;
+                            duration = 120; // 2 minutes
+                            break;
+                          case 3:  // Clever Dripper
+                            target_weight = 20.0;
+                            duration = 240; // 4 minutes
+                            break;
+                          case 4:  // French Press
+                            target_weight = 36.0;
+                            duration = 240; // 4 minutes
+                            break;
+                          case 5:  // Moka Pot
+                            target_weight = 17.0;
+                            duration = 0;
+                            break;
+                          case 6:  // Cold Brew
+                            target_weight = 284.0;
+                            duration = 0;
+                            break;
+                        }
+
+                        // Update timer duration
+                        id(brew_timer_duration) = duration;
+
+                        // Update target grind weight
+                        id(beanweight) = target_weight;
+
+                        // Update bean weight label and target weight label
+                        char buf[20];
+                        snprintf(buf, sizeof(buf), "%.0fg", target_weight);
+                        lv_label_set_text(id(bean_weight_label), buf);
+
+                        char target_buf[30];
+                        snprintf(target_buf, sizeof(target_buf), "Target: %.0fg", target_weight);
+                        lv_label_set_text(id(target_weight_label), target_buf);
+
+                        // Log the selection
+                        ESP_LOGI("roller", "Selected method index: %d, Timer: %d seconds, Target weight: %.1fg",
+                                 x, duration, target_weight);
+                    # Update the number entity in Home Assistant
+                    - number.set:
+                        id: target_grind_weight_number
+                        value: !lambda 'return id(beanweight);'
+                    # Cancel any running timer when brew method changes
+                    - homeassistant.service:
+                        service: timer.cancel
+                        data:
+                          entity_id: timer.coffee_timer
+
+        # Info Card (Top Right) - Shows all three key weights
+        - obj:
+            id: info_card
+            height: 200
+            width: 380
+            x: -10
+            y: 50
+            align: TOP_RIGHT
+            styles: style_card
+            widgets:
+              # Column 1: Grinder (NAU7802) - left third
+              - label:
+                  text: "Grinder"
+                  align: TOP_LEFT
+                  x: 25
+                  y: 10
+                  text_font: tiny
+                  text_color: 0xAAAAAA
+              - label:
+                  id: info_grinder_value
+                  text: "0g"
+                  align: TOP_LEFT
+                  x: 25
+                  y: 40
+                  text_font: small
+                  text_color: 0x00DDFF
+              # Column 2: Brewer (Bookoo) - center third
+              - label:
+                  text: "Brewer"
+                  align: TOP_MID
+                  y: 10
+                  text_font: tiny
+                  text_color: 0xAAAAAA
+              - label:
+                  id: info_brewer_value
+                  text: "0g"
+                  align: TOP_MID
+                  y: 40
+                  text_font: small
+                  text_color: 0xFF8800
+              # Column 3: Water Target - right third
+              - label:
+                  text: "Water"
+                  align: TOP_RIGHT
+                  x: -25
+                  y: 10
+                  text_font: tiny
+                  text_color: 0xAAAAAA
+              - label:
+                  id: info_water_value
+                  text: "0g"
+                  align: TOP_RIGHT
+                  x: -25
+                  y: 40
+                  text_font: small
+                  text_color: 0x00FF88
+              # NAU7802 Raw Value for calibration
+              - label:
+                  text: "NAU7802 Raw"
+                  align: CENTER
+                  y: -5
+                  text_font: tiny
+                  text_color: 0xAAAAAA
+              - label:
+                  id: nau_raw_label
+                  text: "--"
+                  align: CENTER
+                  y: 20
+                  text_font: small
+                  text_color: 0xFF4444
+              # Bottom row: Final grind weight
+              - label:
+                  id: info_final_label
+                  text: !lambda |-
+                    if (id(final_grind_weight) > 0.0) {
+                      static char buf[30];
+                      snprintf(buf, sizeof(buf), "Final: %.1fg", id(final_grind_weight));
+                      return buf;
+                    } else {
+                      return "Final: --";
+                    }
+                  align: BOTTOM_MID
+                  y: -10
+                  text_font: small
+                  text_color: 0x00FF88
+
+        # Timer Button (Middle Right)
+        - button:
+            id: timer_btn
+            height: 95
+            width: 185
+            x: 410
+            y: 260
+            bg_color: 0x2F8CD8
+            bg_opa: COVER
+            border_width: 2
+            border_color: 0x0077b3
+            radius: 12
+            shadow_width: 8
+            shadow_opa: 25%
+            shadow_color: 0x000000
+            widgets:
+              - label:
+                  id: timer_btn_label
+                  text: "Timer"
+                  align: CENTER
+                  text_font: small
+                  text_color: 0xFFFFFF
+            on_press:
+              - logger.log:
+                  format: "Timer button pressed. Duration: %d seconds"
+                  args: ['id(brew_timer_duration)']
+              - if:
+                  condition:
+                    - lambda: 'return id(brew_timer_duration) > 0;'
+                  then:
+                    - logger.log:
+                        format: "Starting coffee timer for %d seconds (%d minutes)"
+                        args: ['id(brew_timer_duration)', 'id(brew_timer_duration) / 60']
+                    # Call the script with pre-formatted duration string
+                    # NOTE: You need to create a script.start_coffee_timer in Home Assistant
+                    # See README for details
+                    - homeassistant.service:
+                        service: script.start_coffee_timer
+                        data:
+                          duration_formatted: !lambda |-
+                            char buffer[9];
+                            int dur = id(brew_timer_duration);
+                            int hours = 0;
+                            int minutes = dur / 60;
+                            int seconds = dur % 60;
+                            snprintf(buffer, sizeof(buffer), "%02d:%02d:%02d", hours, minutes, seconds);
+                            return std::string(buffer);
+                    - if:
+                        condition:
+                          lambda: 'return id(timer_sound_enabled);'
+                        then:
+                          - rtttl.play: "success:d=16,o=5,b=140:c,e,g,c6"
+                    - logger.log: "Timer script called"
+                  else:
+                    - logger.log: "No timer duration set for this brew method (duration is 0)"
+
+        # Grinder Button (Bottom Right)
+        - button:
+            id: grinder_btn
+            height: 95
+            width: 185
+            x: -10
+            y: 260
+            align: TOP_RIGHT
+            bg_color: 0x2F8CD8
+            bg_opa: COVER
+            border_width: 2
+            border_color: 0x0077b3
+            radius: 12
+            shadow_width: 8
+            shadow_opa: 25%
+            shadow_color: 0x000000
+            widgets:
+              - label:
+                  id: grinder_btn_icon
+                  text: "\U000F0950"
+                  align: CENTER
+                  y: -15
+                  text_font: font_mdi_medium
+                  text_color: 0xFFFFFF
+              - label:
+                  id: grinder_btn_label
+                  text: "Grinder"
+                  align: BOTTOM_MID
+                  y: -5
+                  text_font: small
+                  text_color: 0xFFFFFF
+            on_press:
+              # NOTE: Change switch.grinder to your grinder's entity_id in Home Assistant
+              - if:
+                  condition:
+                    lambda: 'return id(grinder).state == "on";'
+                  then:
+                    - homeassistant.service:
+                        service: switch.turn_off
+                        data:
+                          entity_id: switch.grinder
+                    - if:
+                        condition:
+                          lambda: 'return id(grinder_sound_enabled);'
+                        then:
+                          - rtttl.play: "beep:d=4,o=5,b=100:16e6"
+                  else:
+                    - homeassistant.service:
+                        service: switch.turn_on
+                        data:
+                          entity_id: switch.grinder
+                    - if:
+                        condition:
+                          lambda: 'return id(grinder_sound_enabled);'
+                        then:
+                          - rtttl.play: "beep:d=4,o=5,b=100:16e6"
+
+        # Tare Button (Bottom Left) - Tares NAU7802 coffee scale
+        - button:
+            id: tare_btn
+            height: 95
+            width: 185
+            x: 410
+            y: -10
+            align: BOTTOM_LEFT
+            bg_color: 0x2F8CD8
+            bg_opa: COVER
+            border_width: 2
+            border_color: 0x0077b3
+            radius: 12
+            shadow_width: 8
+            shadow_opa: 25%
+            shadow_color: 0x000000
+            widgets:
+              - label:
+                  text: "\U000F0F84"
+                  align: CENTER
+                  y: -15
+                  text_font: font_mdi_medium
+                  text_color: 0xFFFFFF
+              - label:
+                  text: "Tare"
+                  align: BOTTOM_MID
+                  y: -5
+                  text_font: small
+                  text_color: 0xFFFFFF
+            on_press:
+              - button.press: tare_scale_btn
+              - if:
+                  condition:
+                    lambda: 'return id(tare_sound_enabled);'
+                  then:
+                    - rtttl.play: "beep:d=4,o=5,b=100:16e6"
+
+        # Bean Weight Button (Bottom Right)
+        - button:
+            id: bean_weight_btn
+            height: 95
+            width: 185
+            x: -10
+            y: -10
+            align: BOTTOM_RIGHT
+            bg_color: 0x2F8CD8
+            bg_opa: COVER
+            border_width: 2
+            border_color: 0x0077b3
+            radius: 12
+            shadow_width: 8
+            shadow_opa: 25%
+            shadow_color: 0x000000
+            widgets:
+              - label:
+                  id: bean_weight_label
+                  text: "0g"
+                  align: CENTER
+                  y: -15
+                  text_font: small
+                  text_color: 0xFFFFFF
+              - label:
+                  text: "Bean Weight"
+                  align: BOTTOM_MID
+                  y: -10
+                  text_font: tiny
+                  text_color: 0xFFFFFF
+            on_press:
+              - lvgl.page.show: bean_weight_page
+
+    # Bean Weight Input Page
+    - id: bean_weight_page
+      bg_color: 0x000000
+      bg_opa: COVER
+      widgets:
+        # Header with title
+        - obj:
+            id: bean_weight_header
+            height: 60
+            width: 100%
+            align: TOP_MID
+            bg_color: 0x1a1a1a
+            bg_opa: COVER
+            border_width: 0
+            pad_all: 0
+            widgets:
+              - label:
+                  text: "Enter Target Grind Weight"
+                  align: CENTER
+                  text_font: small
+                  text_color: 0xFFFFFF
+
+        # Text area for input
+        - textarea:
+            id: bean_weight_input
+            height: 100
+            width: 600
+            align: CENTER
+            y: -50
+            text_font: big
+            one_line: true
+            placeholder_text: "0"
+            max_length: 6
+            accepted_chars: "0123456789."
+            bg_color: 0x2a2a2a
+            bg_opa: COVER
+            border_color: 0x0077b3
+            border_width: 3
+            radius: 12
+            pad_all: 15
+            text_color: 0x00DDFF
+
+        # Keyboard widget in number mode
+        - keyboard:
+            id: bean_weight_keyboard
+            height: 300
+            width: 780
+            align: BOTTOM_MID
+            y: -10
+            mode: NUMBER
+            textarea: bean_weight_input
+            bg_color: 0x1a1a1a
+            bg_opa: COVER
+            on_ready:
+              - lambda: |-
+                  // Get text from textarea and convert to float
+                  const char* input_text = lv_textarea_get_text(id(bean_weight_input));
+                  if (input_text != nullptr && strlen(input_text) > 0) {
+                    float weight = atof(input_text);
+                    id(beanweight) = weight;
+                    ESP_LOGI("bean_weight", "Bean weight saved: %.1fg", id(beanweight));
+
+                    // Update the labels on main page
+                    char buf[20];
+                    snprintf(buf, sizeof(buf), "%.0fg", weight);
+                    lv_label_set_text(id(bean_weight_label), buf);
+
+                    char target_buf[30];
+                    snprintf(target_buf, sizeof(target_buf), "Target: %.0fg", weight);
+                    lv_label_set_text(id(target_weight_label), target_buf);
+                  }
+              # Update the number entity in Home Assistant
+              - number.set:
+                  id: target_grind_weight_number
+                  value: !lambda 'return id(beanweight);'
+              - lvgl.page.show: main_page
+
+# Fonts for LVGL Coffee Station UI
+font:
+  - file: "gfonts://Roboto"
+    id: roboto10
+    size: 10
+    bpp: 4
+  - file: "gfonts://Inter@900"
+    id: big
+    size: 100
+    bpp: 2
+    glyphs: "0123456789.-"
+  - file: "gfonts://Inter@900"
+    id: medium
+    size: 50
+    bpp: 2
+    glyphs: "0123456789.-°CFg"
+  - file: "gfonts://Inter@900"
+    id: medium_small
+    size: 40
+    bpp: 2
+    glyphs: "0123456789.-g"
+  - file: "gfonts://Inter@700"
+    id: small
+    size: 28
+    bpp: 2
+  - file: "gfonts://Inter@700"
+    id: tiny
+    size: 20
+    bpp: 2
+  - file: "gfonts://Inter@700"
+    id: dropdown_font
+    size: 30
+    bpp: 2
+  - file: 'fonts/materialdesignicons-webfont.ttf'
+    id: font_mdi_medium
+    size: 36
+    bpp: 2
+    glyphs:
+      - "\U000F0950" # mdi-coffee
+      - "\U000F0F84" # mdi-scale
+
+# Binary sensor for boot button (if available)
+binary_sensor:
+  - platform: gpio
+    id: boot_button
+    name: "${friendly_name} Boot Button"
+    pin:
+      number: GPIO0
+      inverted: true
+      mode:
+        input: true
+        pullup: true
+    on_press:
+      - if:
+          condition:
+            lambda: 'return id(boot_sound_enabled);'
+          then:
+            - rtttl.play: "short:d=4,o=5,b=100:16e6"
+
+# Buttons for Home Assistant - Play sounds
+button:
+  # Scale Tare Button
+  - platform: template
+    name: "Tare Coffee Scale"
+    id: tare_scale_btn
+    icon: "mdi:scale-balance"
+    on_press:
+      - lambda: |-
+          // Tare: store current raw reading as the new zero point
+          id(initial_zero) = id(coffee_scale_raw).state;
+      - sensor.template.publish:
+          id: coffee_scale_raw_diagnostic
+          state: !lambda |-
+            return id(coffee_scale_raw).state;
+
+  - platform: template
+    name: "${friendly_name} Play Beep"
+    icon: "mdi:volume-high"
+    on_press:
+      - rtttl.play: "beep:d=4,o=5,b=100:16e6"
+
+  - platform: template
+    name: "${friendly_name} Play Alert"
+    icon: "mdi:alert"
+    on_press:
+      - rtttl.play: "alert:d=8,o=5,b=200:c6,p,c6,p,c6"
+
+  - platform: template
+    name: "${friendly_name} Play Success"
+    icon: "mdi:check-circle"
+    on_press:
+      - rtttl.play: "success:d=16,o=5,b=140:c,e,g,c6"
+
+  - platform: template
+    name: "${friendly_name} Play Error"
+    icon: "mdi:close-circle"
+    on_press:
+      - rtttl.play: "error:d=16,o=4,b=120:g,d,g,d"
+
+switch:
+  # Individual sound controls
+  - platform: template
+    id: tare_sound_switch
+    name: "Tare Button Sound"
+    icon: "mdi:volume-high"
+    lambda: 'return id(tare_sound_enabled);'
+    turn_on_action:
+      - lambda: 'id(tare_sound_enabled) = true;'
+    turn_off_action:
+      - lambda: 'id(tare_sound_enabled) = false;'
+
+  - platform: template
+    id: grinder_sound_switch
+    name: "Grinder Button Sound"
+    icon: "mdi:volume-high"
+    lambda: 'return id(grinder_sound_enabled);'
+    turn_on_action:
+      - lambda: 'id(grinder_sound_enabled) = true;'
+    turn_off_action:
+      - lambda: 'id(grinder_sound_enabled) = false;'
+
+  - platform: template
+    id: timer_sound_switch
+    name: "Timer Sound"
+    icon: "mdi:volume-high"
+    lambda: 'return id(timer_sound_enabled);'
+    turn_on_action:
+      - lambda: 'id(timer_sound_enabled) = true;'
+    turn_off_action:
+      - lambda: 'id(timer_sound_enabled) = false;'
+
+  - platform: template
+    id: scale_tap_sound_switch
+    name: "Scale Tap Sound"
+    icon: "mdi:volume-high"
+    lambda: 'return id(scale_tap_sound_enabled);'
+    turn_on_action:
+      - lambda: 'id(scale_tap_sound_enabled) = true;'
+    turn_off_action:
+      - lambda: 'id(scale_tap_sound_enabled) = false;'
+
+  - platform: template
+    id: boot_sound_switch
+    name: "Boot Button Sound"
+    icon: "mdi:volume-high"
+    lambda: 'return id(boot_sound_enabled);'
+    turn_on_action:
+      - lambda: 'id(boot_sound_enabled) = true;'
+    turn_off_action:
+      - lambda: 'id(boot_sound_enabled) = false;'
+
+# Backlight brightness control
+number:
+  # Target Grind Weight
+  - platform: template
+    name: "Target Grind Weight"
+    id: target_grind_weight_number
+    icon: "mdi:coffee-outline"
+    optimistic: true
+    min_value: 1
+    max_value: 500
+    step: 0.5
+    unit_of_measurement: "g"
+    mode: box
+    initial_value: 20
+    restore_value: true
+    set_action:
+      - lambda: |-
+          // Update the global variable
+          id(beanweight) = x;
+
+          // Update the display labels
+          char buf[20];
+          snprintf(buf, sizeof(buf), "%.0fg", x);
+          lv_label_set_text(id(bean_weight_label), buf);
+
+          char target_buf[30];
+          snprintf(target_buf, sizeof(target_buf), "Target: %.0fg", x);
+          lv_label_set_text(id(target_weight_label), target_buf);
+
+  - platform: template
+    name: "${friendly_name} Backlight Brightness"
+    id: backlight_brightness
+    min_value: 0
+    max_value: 100
+    step: 1
+    initial_value: 100
+    optimistic: true
+    restore_value: true
+    unit_of_measurement: "%"
+    mode: slider
+    on_value:
+      then:
+        - lambda: |-
+            uint8_t brightness = (uint8_t)x;
+            uint8_t cmd[2] = {0x20, brightness};  // Register 0x20 (PWM0), duty = brightness
+            id(bus_a)->write(0x2F, cmd, 2);
+            ESP_LOGI("backlight", "Backlight brightness set to %d%%", brightness);
+
+# Diagnostic Sensors
+sensor:
+  # NAU7802 Load Cell Amplifier (connected directly to I2C bus)
+  - platform: nau7802
+    id: coffee_scale_raw
+    i2c_id: bus_a
+    gain: 128
+    samples_per_second: 80
+    update_interval: 250ms
+    internal: true
+    filters:
+      - sliding_window_moving_average:
+          window_size: 3
+          send_every: 1
+    on_value:
+      then:
+        - sensor.template.publish:
+            id: coffee_scale
+            state: !lambda |-
+              return id(coffee_scale_raw).state;
+        # Log and display raw NAU7802 value for calibration
+        - lambda: |-
+            ESP_LOGI("nau7802", "RAW value: %.0f", id(coffee_scale_raw).state);
+        - lvgl.label.update:
+            id: nau_raw_label
+            text: !lambda |-
+              char buf[20];
+              snprintf(buf, sizeof(buf), "%.0f", id(coffee_scale_raw).state);
+              return std::string(buf);
+        # Update grinder weight in info card
+        - lambda: |-
+            float raw = id(coffee_scale_raw).state;
+            float calibrated = id(coffee_scale).state;
+            ESP_LOGI("scale_debug", "RAW: %.0f | coffee_scale state: %.1f | initial_zero: %.0f", raw, calibrated, id(initial_zero));
+        - lvgl.label.update:
+            id: info_grinder_value
+            text: !lambda |-
+              float val = id(coffee_scale).state;
+              if (std::isnan(val)) {
+                return std::string("--g");
+              }
+              char buf[20];
+              snprintf(buf, sizeof(buf), "%.1fg", val);
+              return std::string(buf);
+
+  # Calibrated coffee scale sensor
+  - platform: template
+    id: coffee_scale
+    name: "Coffee Scale"
+    unit_of_measurement: g
+    accuracy_decimals: 1
+    update_interval: 500ms
+    internal: false
+    lambda: |-
+      return id(coffee_scale_raw).state;
+    filters:
+      # Apply calibration using initial_zero as the dynamic zero point
+      # Scale factor: Adjust counts_per_gram for YOUR load cell
+      # To calibrate: place a known weight, note the raw value, and calculate:
+      #   counts_per_gram = (raw_with_weight - raw_empty) / known_weight_in_grams
+      - lambda: |-
+          float zero = id(initial_zero);
+          float counts_per_gram = 363900.0 / 1010.4;
+          float calibrated = (x - zero) / counts_per_gram;
+          calibrated -= 2.8;  // Subtract cup weight (adjust for your cup)
+          if (calibrated <= 0.1) {
+            return 0.0;
+          }
+          return calibrated;
+      # Only send updates when weight changes by 0.5g or more
+      - delta: 0.5
+    # Auto-stop grinder when target weight is reached
+    on_value_range:
+      - above: !lambda 'return id(beanweight) > 0 ? id(beanweight) - 0.5 : 999999;'
+        then:
+          - if:
+              condition:
+                lambda: 'return id(grinder).state == "on";'
+              then:
+                - logger.log:
+                    format: "Target weight %.1fg reached (current: %.1fg), stopping grinder"
+                    args: ['id(beanweight)', 'x']
+                - lambda: |-
+                    id(final_grind_weight) = x;
+                    char buf[30];
+                    snprintf(buf, sizeof(buf), "Final: %.1fg", x);
+                    lv_label_set_text(id(final_weight_label), buf);
+                    lv_label_set_text(id(info_final_label), buf);
+                - homeassistant.service:
+                    service: switch.turn_off
+                    data:
+                      entity_id: switch.grinder
+      # Emergency stop at 80g
+      - above: 80.0
+        then:
+          - if:
+              condition:
+                lambda: 'return id(grinder).state == "on";'
+              then:
+                - logger.log:
+                    format: "EMERGENCY STOP: Weight limit reached (%.1fg), shutting off grinder!"
+                    args: ['x']
+                - lambda: |-
+                    id(final_grind_weight) = x;
+                    char buf[30];
+                    snprintf(buf, sizeof(buf), "Final: %.1fg", x);
+                    lv_label_set_text(id(final_weight_label), buf);
+                    lv_label_set_text(id(info_final_label), buf);
+                - homeassistant.service:
+                    service: switch.turn_off
+                    data:
+                      entity_id: switch.grinder
+
+  # Diagnostic sensors for coffee scale
+  - platform: template
+    id: coffee_scale_raw_diagnostic
+    name: "Coffee Scale NAU7802 Raw Value"
+    entity_category: "diagnostic"
+    accuracy_decimals: 0
+    internal: true
+
+  - platform: template
+    id: smart_scale_initial_zero
+    name: "Coffee Scale Initial Zero"
+    lambda: 'return id(initial_zero);'
+    update_interval: 60s
+    accuracy_decimals: 0
+    internal: true
+
+  - platform: template
+    id: smart_scale_auto_tare_deviance
+    entity_category: "diagnostic"
+    name: "Coffee Scale Calibration Deviance"
+    lambda: |-
+      return (int((id(coffee_scale_raw).state - id(initial_zero)) / 100)) * 100;
+    update_interval: 60s
+    accuracy_decimals: 0
+    internal: true
+
+  # Coffee Scale Tare/Zero Weight
+  - platform: template
+    id: tare_weight
+    name: "Scale Tare Value"
+    internal: true
+
+  # Home Assistant initial zero value for calibration (via API)
+  # NOTE: Create an input_number.smart_scale_initial_zero helper in HA
+  - platform: homeassistant
+    id: homeassistant_initial_zero
+    entity_id: input_number.smart_scale_initial_zero
+    internal: true
+    on_value:
+      then:
+        - lambda: 'id(initial_zero) = x;'
+
+  # Bookoo scale battery level
+  # NOTE: Change entity_id to match YOUR Bookoo scale (or remove if not using one)
+  - platform: homeassistant
+    id: bookoo_battery
+    name: "Bookoo Scale Battery"
+    entity_id: sensor.bookoo_sc_852704_battery
+    unit_of_measurement: "%"
+    accuracy_decimals: 0
+    on_value:
+      - lvgl.label.update:
+          id: bookoo_battery_label
+          text: !lambda |-
+            if (std::isnan(x)) {
+              return std::string("--");
+            }
+            char buf[10];
+            snprintf(buf, sizeof(buf), "%.0f%%", x);
+            return std::string(buf);
+
+  # Bookoo scale weight
+  # NOTE: Change entity_id to match YOUR Bookoo scale (or remove if not using one)
+  - platform: homeassistant
+    id: bookoo_weight
+    name: "Bookoo Scale Weight"
+    entity_id: sensor.bookoo_sc_852704_weight
+    unit_of_measurement: "g"
+    accuracy_decimals: 1
+    on_value:
+      # Calculate water target from Bookoo weight (beans x 16)
+      - lambda: |-
+          if (!std::isnan(x) && x > 1.0) {
+            id(water_target) = x * 16.0;
+          } else {
+            id(water_target) = 0.0;
+          }
+      # Update brewer weight in info card
+      - lvgl.label.update:
+          id: info_brewer_value
+          text: !lambda |-
+            if (std::isnan(x)) {
+              return std::string("--");
+            }
+            char buf[20];
+            snprintf(buf, sizeof(buf), "%.1fg", x);
+            return std::string(buf);
+      # Update water target in info card
+      - lvgl.label.update:
+          id: info_water_value
+          text: !lambda |-
+            char buf[20];
+            snprintf(buf, sizeof(buf), "%.0fg", id(water_target));
+            return std::string(buf);
+      # Update water card
+      - lvgl.label.update:
+          id: water_value
+          text: !lambda |-
+            char buf[20];
+            snprintf(buf, sizeof(buf), "%.0fg", id(water_target));
+            return std::string(buf);
+
+  # Water temperature from smart kettle
+  # NOTE: Change entity_id to match YOUR kettle sensor (or remove if not using one)
+  - platform: homeassistant
+    id: water_temperature
+    name: "Water Temperature"
+    entity_id: sensor.cosori_kettle_temperature
+    unit_of_measurement: "°F"
+    accuracy_decimals: 1
+    on_value:
+      - lvgl.label.update:
+          id: water_temp_label
+          text: !lambda |-
+            if (std::isnan(x)) {
+              return std::string("--°F");
+            }
+            char buf[20];
+            snprintf(buf, sizeof(buf), "%.1f°F", x);
+            return std::string(buf);
+
+  # Outside temperature from Home Assistant
+  # NOTE: Change entity_id to match YOUR weather sensor
+  - platform: homeassistant
+    id: outside_temp
+    entity_id: sensor.openweathermap_feels_like_temperature
+    internal: true
+    on_value:
+      - lvgl.label.update:
+          id: header_temp_label
+          text: !lambda |-
+            if (std::isnan(x)) {
+              return std::string("--°");
+            }
+            char buf[20];
+            snprintf(buf, sizeof(buf), "%.0f°", x);
+            return std::string(buf);
+
+  # WiFi Signal Strength
+  - platform: wifi_signal
+    name: "${friendly_name} WiFi Signal"
+    id: wifi_signal_db
+    update_interval: 10s
+    internal: true
+
+  # Uptime
+  - platform: uptime
+    name: "${friendly_name} Uptime"
+    id: uptime_sensor
+    update_interval: 60s
+    internal: true
+  - platform: debug
+    free:
+      name: "Heap Free"
+    block:
+      name: "Heap Max Block"
+    loop_time:
+      name: "Loop Time"
+    psram:
+      name: "Free PSRAM"
+    cpu_frequency:
+      name: "CPU Frequency"
+
+# Diagnostic Text Sensors
+text_sensor:
+  # Grinder status from Home Assistant (via API)
+  # NOTE: Change entity_id to match YOUR grinder switch
+  - platform: homeassistant
+    id: grinder
+    entity_id: switch.grinder
+    on_value:
+      then:
+        - if:
+            condition:
+              lambda: 'return x == "on";'
+            then:
+              - lambda: |-
+                  // Reset final weight for new grind cycle
+                  id(final_grind_weight) = 0.0;
+                  lv_label_set_text(id(info_final_label), "Final: --");
+                  lv_label_set_text(id(final_weight_label), "Final: --");
+                  ESP_LOGI("grinder", "Grinder started - final weight reset");
+        - if:
+            condition:
+              lambda: 'return x == "off";'
+            then:
+              - lambda: |-
+                  // Capture NAU7802 weight on manual stop (only if auto-stop didn't already fire)
+                  float current_nau = id(coffee_scale).state;
+                  if (current_nau > 0.5 && id(final_grind_weight) < 0.1) {
+                    id(final_grind_weight) = current_nau;
+                    char buf[30];
+                    snprintf(buf, sizeof(buf), "Final: %.1fg", current_nau);
+                    lv_label_set_text(id(info_final_label), buf);
+                    lv_label_set_text(id(final_weight_label), buf);
+                    ESP_LOGI("grinder", "Grinder stopped manually - Final weight: %.1fg", current_nau);
+                  }
+
+  # WiFi SSID
+  - platform: wifi_info
+    ssid:
+      name: "${friendly_name} SSID"
+      id: wifi_ssid
+      internal: true
+    ip_address:
+      name: "${friendly_name} IP Address"
+      id: wifi_ip
+      internal: true
+  - platform: debug
+    device:
+      name: "Device Info"
+    reset_reason:
+      name: "Reset Reason"
+
+  # Weather forecast condition from Home Assistant
+  # NOTE: Change entity_id to match YOUR weather entity
+  - platform: homeassistant
+    id: weather_condition
+    entity_id: weather.forecast_home
+    internal: true
+    on_value:
+      - lvgl.label.update:
+          id: header_weather_label
+          text: !lambda |-
+            // Capitalize first letter of condition
+            std::string cond = x;
+            if (!cond.empty()) {
+              cond[0] = toupper(cond[0]);
+              // Replace hyphens/underscores with spaces
+              for (auto &c : cond) {
+                if (c == '-' || c == '_') c = ' ';
+              }
+            }
+            return cond;
+
+  # ESPHome Version
+  - platform: version
+    name: "${friendly_name} ESPHome Version"
+    id: esphome_version
+    internal: true
