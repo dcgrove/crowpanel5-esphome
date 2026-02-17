@@ -1,10 +1,6 @@
 # CrowPanel ESP32-P4 5.0" 800x480 Display Configuration
 # Hardware: ESP32-P4 with RGB Parallel Touch Display
 # Based on Elecrow factory source code V1.0
-#
-# Coffee Station Controller with LVGL touchscreen UI
-# Features: Brew method selector, grinder control, scale integration,
-#           brew timer, water target calculator, backlight control
 
 substitutions:
   device_name: crowpanel5
@@ -157,11 +153,10 @@ wifi:
   ssid: !secret wifi_ssid
   password: !secret wifi_password
 
-  # Optional: Uncomment and set a static IP for your network
-  # manual_ip:
-  #   static_ip: 192.168.1.100
-  #   gateway: 192.168.1.1
-  #   subnet: 255.255.255.0
+  manual_ip:
+    static_ip: 192.168.1.197
+    gateway: 192.168.1.1
+    subnet: 255.255.255.0
 
   # Fallback hotspot
   ap:
@@ -228,7 +223,7 @@ globals:
 time:
   - platform: homeassistant
     id: ha_time
-    timezone: America/Los_Angeles  # Change to your timezone
+    timezone: America/Los_Angeles
     on_time:
       # Turn off display at 10pm
       - hours: 22
@@ -287,6 +282,30 @@ touchscreen:
       - lambda: |-
           ESP_LOGI("touch", "Touch at x=%d, y=%d", touch.x, touch.y);
 
+# TCA9548A I2C Multiplexer (for NAU7802 load cell)
+# Connect to bus_a (GPIO45=SDA, GPIO46=SCL)
+# tca9548a:
+#   - address: 0x70
+#     id: multiplex0
+#     i2c_id: bus_a
+#     channels:
+#       - bus_id: multiplex0channel0
+#         channel: 0
+#       - bus_id: multiplex0channel1
+#         channel: 1
+#       - bus_id: multiplex0channel2
+#         channel: 2
+#       - bus_id: multiplex0channel3
+#         channel: 3
+#       - bus_id: multiplex0channel4
+#         channel: 4
+#       - bus_id: multiplex0channel5
+#         channel: 5
+#       - bus_id: multiplex0channel6
+#         channel: 6
+#       - bus_id: multiplex0channel7
+#         channel: 7
+
 # SD Card (Micro SD slot) - Not configured
 # ESPHome doesn't have native SD/MMC support for ESP-IDF
 # Pins for reference: CLK=GPIO43, CMD=GPIO44, D0=GPIO39
@@ -312,6 +331,17 @@ speaker:
 rtttl:
   id: buzzer
   speaker: speaker_out
+
+# Media Player - exposes speakers to Home Assistant
+media_player:
+  - platform: speaker
+    name: "${friendly_name} Speaker"
+    id: speaker_player
+    announcement_pipeline:
+      speaker: speaker_out
+      format: FLAC
+      sample_rate: 48000
+      num_channels: 1
 
 # RGB Parallel Display Configuration
 # 800x480 @ ~42Hz (25MHz pixel clock)
@@ -460,16 +490,9 @@ lvgl:
             x: 10
             y: 260
             styles: style_card
-            on_click:
-              - button.press: tare_scale_btn
-              - if:
-                  condition:
-                    lambda: 'return id(scale_tap_sound_enabled);'
-                  then:
-                    - rtttl.play: "beep:d=4,o=5,b=100:16e6"
             widgets:
               - label:
-                  text: "Grinder"
+                  text: "Scale"
                   align: TOP_LEFT
                   x: 10
                   y: 10
@@ -649,6 +672,16 @@ lvgl:
             y: 50
             align: TOP_RIGHT
             styles: style_card
+            on_click:
+              - homeassistant.service:
+                  service: button.press
+                  data:
+                    entity_id: button.bookoo_sc_852704_tare
+              - if:
+                  condition:
+                    lambda: 'return id(scale_tap_sound_enabled);'
+                  then:
+                    - rtttl.play: "beep:d=4,o=5,b=100:16e6"
             widgets:
               # Column 1: Grinder (NAU7802) - left third
               - label:
@@ -696,20 +729,6 @@ lvgl:
                   y: 40
                   text_font: small
                   text_color: 0x00FF88
-              # NAU7802 Raw Value for calibration
-              - label:
-                  text: "NAU7802 Raw"
-                  align: CENTER
-                  y: -5
-                  text_font: tiny
-                  text_color: 0xAAAAAA
-              - label:
-                  id: nau_raw_label
-                  text: "--"
-                  align: CENTER
-                  y: 20
-                  text_font: small
-                  text_color: 0xFF4444
               # Bottom row: Final grind weight
               - label:
                   id: info_final_label
@@ -760,8 +779,6 @@ lvgl:
                         format: "Starting coffee timer for %d seconds (%d minutes)"
                         args: ['id(brew_timer_duration)', 'id(brew_timer_duration) / 60']
                     # Call the script with pre-formatted duration string
-                    # NOTE: You need to create a script.start_coffee_timer in Home Assistant
-                    # See README for details
                     - homeassistant.service:
                         service: script.start_coffee_timer
                         data:
@@ -814,7 +831,6 @@ lvgl:
                   text_font: small
                   text_color: 0xFFFFFF
             on_press:
-              # NOTE: Change switch.grinder to your grinder's entity_id in Home Assistant
               - if:
                   condition:
                     lambda: 'return id(grinder).state == "on";'
@@ -1205,20 +1221,7 @@ sensor:
             id: coffee_scale
             state: !lambda |-
               return id(coffee_scale_raw).state;
-        # Log and display raw NAU7802 value for calibration
-        - lambda: |-
-            ESP_LOGI("nau7802", "RAW value: %.0f", id(coffee_scale_raw).state);
-        - lvgl.label.update:
-            id: nau_raw_label
-            text: !lambda |-
-              char buf[20];
-              snprintf(buf, sizeof(buf), "%.0f", id(coffee_scale_raw).state);
-              return std::string(buf);
         # Update grinder weight in info card
-        - lambda: |-
-            float raw = id(coffee_scale_raw).state;
-            float calibrated = id(coffee_scale).state;
-            ESP_LOGI("scale_debug", "RAW: %.0f | coffee_scale state: %.1f | initial_zero: %.0f", raw, calibrated, id(initial_zero));
         - lvgl.label.update:
             id: info_grinder_value
             text: !lambda |-
@@ -1242,14 +1245,13 @@ sensor:
       return id(coffee_scale_raw).state;
     filters:
       # Apply calibration using initial_zero as the dynamic zero point
-      # Scale factor: Adjust counts_per_gram for YOUR load cell
-      # To calibrate: place a known weight, note the raw value, and calculate:
-      #   counts_per_gram = (raw_with_weight - raw_empty) / known_weight_in_grams
+      # Scale factor: Adjusted to 360.1 counts/gram (363900 counts / 1010.4g)
+      # Offset: -2.8g to account for cup weight
       - lambda: |-
           float zero = id(initial_zero);
           float counts_per_gram = 363900.0 / 1010.4;
           float calibrated = (x - zero) / counts_per_gram;
-          calibrated -= 2.8;  // Subtract cup weight (adjust for your cup)
+          calibrated -= 2.8;  // Subtract cup weight
           if (calibrated <= 0.1) {
             return 0.0;
           }
@@ -1331,7 +1333,6 @@ sensor:
     internal: true
 
   # Home Assistant initial zero value for calibration (via API)
-  # NOTE: Create an input_number.smart_scale_initial_zero helper in HA
   - platform: homeassistant
     id: homeassistant_initial_zero
     entity_id: input_number.smart_scale_initial_zero
@@ -1341,7 +1342,6 @@ sensor:
         - lambda: 'id(initial_zero) = x;'
 
   # Bookoo scale battery level
-  # NOTE: Change entity_id to match YOUR Bookoo scale (or remove if not using one)
   - platform: homeassistant
     id: bookoo_battery
     name: "Bookoo Scale Battery"
@@ -1360,7 +1360,6 @@ sensor:
             return std::string(buf);
 
   # Bookoo scale weight
-  # NOTE: Change entity_id to match YOUR Bookoo scale (or remove if not using one)
   - platform: homeassistant
     id: bookoo_weight
     name: "Bookoo Scale Weight"
@@ -1400,8 +1399,7 @@ sensor:
             snprintf(buf, sizeof(buf), "%.0fg", id(water_target));
             return std::string(buf);
 
-  # Water temperature from smart kettle
-  # NOTE: Change entity_id to match YOUR kettle sensor (or remove if not using one)
+  # Water temperature from Cosori kettle
   - platform: homeassistant
     id: water_temperature
     name: "Water Temperature"
@@ -1420,7 +1418,6 @@ sensor:
             return std::string(buf);
 
   # Outside temperature from Home Assistant
-  # NOTE: Change entity_id to match YOUR weather sensor
   - platform: homeassistant
     id: outside_temp
     entity_id: sensor.openweathermap_feels_like_temperature
@@ -1464,7 +1461,6 @@ sensor:
 # Diagnostic Text Sensors
 text_sensor:
   # Grinder status from Home Assistant (via API)
-  # NOTE: Change entity_id to match YOUR grinder switch
   - platform: homeassistant
     id: grinder
     entity_id: switch.grinder
@@ -1513,7 +1509,6 @@ text_sensor:
       name: "Reset Reason"
 
   # Weather forecast condition from Home Assistant
-  # NOTE: Change entity_id to match YOUR weather entity
   - platform: homeassistant
     id: weather_condition
     entity_id: weather.forecast_home
